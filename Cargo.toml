@@ -1,0 +1,26 @@
+[package]
+name = "hecras"
+version = "0.1.0"
+edition = "2021"
+description = "From-scratch 1D/2D hydraulic river-analysis engine (HEC-RAS-style) in Rust with Python bindings"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/joelfiddes/HEC-RAS"
+keywords = ["hydraulics", "river", "hydrology", "open-channel", "geoscience"]
+
+[lib]
+name = "_hecras"
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[features]
+# The Python bindings (pyo3/numpy) link libpython, which breaks the test harness.
+# Make them an optional, default-on feature so `cargo test --no-default-features`
+# builds the pure-Rust core with no Python linkage at all.
+default = ["extension-module"]
+extension-module = ["dep:pyo3", "dep:numpy", "pyo3/extension-module"]
+
+[dependencies]
+pyo3 = { version = "0.22", optional = true }
+numpy = { version = "0.22", optional = true }
+rayon = "1.10"

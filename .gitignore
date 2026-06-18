@@ -1,0 +1,8 @@
+/target
+**/__pycache__/
+*.so
+*.pyd
+.venv/
+*.png
+!docs/**/*.png
+.DS_Store
