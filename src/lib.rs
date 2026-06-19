@@ -6,6 +6,7 @@
 pub mod geometry;
 pub mod hydraulics;
 pub mod steady;
+pub mod swe2d;
 pub mod unsteady;
 
 // The Python bindings are gated behind the `extension-module` feature so that
@@ -14,6 +15,7 @@ pub mod unsteady;
 #[cfg(feature = "extension-module")]
 mod python_bindings {
 use crate::geometry::CrossSection as RsCrossSection;
+use crate::swe2d::{self, Bc};
 use crate::unsteady::{self, DownstreamBc};
 use crate::{hydraulics, steady};
 use numpy::ndarray::Array2;
@@ -293,11 +295,69 @@ fn route_unsteady<'py>(
     Ok(d)
 }
 
+/// Run the 2D shallow-water model on a Cartesian grid.
+///
+/// `bed`, `h0`, `hu0`, `hv0` are flat row-major fields of length nx*ny (index j*nx + i).
+/// `bc` is `"transmissive"` (open) or `"reflective"` (wall). Returns a dict with the
+/// final `h`, `hu`, `hv` as 2D arrays [ny, nx], plus `time` and `volume` diagnostic
+/// series, `steps` and `t_final`.
+#[pyfunction]
+#[pyo3(signature = (nx, ny, dx, dy, bed, h0, hu0, hv0, manning_n=0.0, t_end=10.0,
+    cfl=0.45, bc="transmissive", max_steps=1_000_000))]
+#[allow(clippy::too_many_arguments)]
+fn run_swe2d<'py>(
+    py: Python<'py>,
+    nx: usize,
+    ny: usize,
+    dx: f64,
+    dy: f64,
+    bed: Vec<f64>,
+    h0: Vec<f64>,
+    hu0: Vec<f64>,
+    hv0: Vec<f64>,
+    manning_n: f64,
+    t_end: f64,
+    cfl: f64,
+    bc: &str,
+    max_steps: usize,
+) -> PyResult<Bound<'py, PyDict>> {
+    let err = |s: String| pyo3::exceptions::PyValueError::new_err(s);
+    let need = nx * ny;
+    for (name, v) in [("bed", &bed), ("h0", &h0), ("hu0", &hu0), ("hv0", &hv0)] {
+        if v.len() != need {
+            return Err(err(format!("{} must have length nx*ny = {}, got {}", name, need, v.len())));
+        }
+    }
+    let bc = match bc {
+        "transmissive" | "open" => Bc::Transmissive,
+        "reflective" | "wall" => Bc::Reflective,
+        other => return Err(err(format!("unknown bc '{}'", other))),
+    };
+
+    let res = swe2d::run_swe2d(
+        nx, ny, dx, dy, &bed, &h0, &hu0, &hv0, manning_n, t_end, cfl, bc, max_steps,
+    );
+
+    let to2d = |v: Vec<f64>| -> PyResult<_> {
+        Array2::from_shape_vec((ny, nx), v).map_err(|e| err(e.to_string()))
+    };
+    let d = PyDict::new_bound(py);
+    d.set_item("h", PyArray2::from_owned_array_bound(py, to2d(res.h)?))?;
+    d.set_item("hu", PyArray2::from_owned_array_bound(py, to2d(res.hu)?))?;
+    d.set_item("hv", PyArray2::from_owned_array_bound(py, to2d(res.hv)?))?;
+    d.set_item("time", PyArray1::from_vec_bound(py, res.times))?;
+    d.set_item("volume", PyArray1::from_vec_bound(py, res.volumes))?;
+    d.set_item("steps", res.steps)?;
+    d.set_item("t_final", res.t_final)?;
+    Ok(d)
+}
+
 #[pymodule]
 fn _hecras(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCrossSection>()?;
     m.add_function(wrap_pyfunction!(steady_profile, m)?)?;
     m.add_function(wrap_pyfunction!(route_unsteady, m)?)?;
+    m.add_function(wrap_pyfunction!(run_swe2d, m)?)?;
     m.add("__version__", "0.1.0")?;
     Ok(())
 }

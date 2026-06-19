@@ -34,13 +34,26 @@ Same architecture as [`fsm-rs`](https://github.com/joelfiddes/fsm-rs): a Rust co
 
 ![Flood-wave routing validation](docs/flood_routing.png)
 
+### Phase 3 — 2D shallow-water flow ✅
+
+- Explicit **finite-volume Godunov** scheme on a Cartesian (raster/DEM) grid with an
+  **HLL** approximate Riemann solver.
+- **Well-balanced** via Audusse hydrostatic reconstruction of the bed source term, so a
+  lake at rest over arbitrary terrain stays *exactly* at rest. Point-implicit Manning
+  friction; wetting/drying; reflective and transmissive boundaries; CFL timestep.
+- Validated (`examples/dam_break_2d.py` + unit tests): convergence to the exact
+  **Stoker dam-break** solution (L1 → 5 mm), **well-balanced lake-at-rest** to 1e-10,
+  and **mass conservation** to 1e-12 in a closed basin.
+
+![2D dam-break vs Stoker](docs/dam_break_2d.png)
+
 ### Roadmap
 
 | Phase | Scope | Status |
 |------:|-------|--------|
 | 1 | 1D steady gradually-varied flow (standard-step) | ✅ done |
 | 2 | 1D unsteady — Saint-Venant via Preissmann implicit scheme | ✅ done |
-| 3 | 2D shallow-water finite-volume on a DEM mesh | planned |
+| 3 | 2D shallow-water finite-volume on a DEM grid | ✅ done |
 | 4 | Application: Swiss reach (SwissALTI3D + BAFU gauge) → transfer to Central Asia | planned |
 
 Units are **SI / metric** throughout.
@@ -84,6 +97,22 @@ res = route_unsteady(
 )
 res["time"], res["inflow"], res["outflow"]        # 1D arrays
 res["stage"], res["discharge"]                    # 2D arrays [time, node]
+```
+
+### 2D shallow-water (Phase 3)
+
+```python
+from hecras import run_swe2d
+
+# flat row-major fields of length nx*ny (index j*nx + i)
+res = run_swe2d(
+    nx, ny, dx, dy,
+    bed, h0, hu0, hv0,                 # bed elevation + initial depth/momenta
+    manning_n=0.03, t_end=30.0, cfl=0.45,
+    bc="transmissive",                 # or "reflective"
+)
+res["h"], res["hu"], res["hv"]         # final 2D fields [ny, nx]
+res["volume"]                          # mass-conservation diagnostic over time
 ```
 
 ## Develop / test

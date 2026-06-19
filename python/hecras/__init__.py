@@ -7,6 +7,18 @@ Phase 1 provides 1D steady gradually-varied flow:
     >>> xs.normal_depth(50.0, 0.001)
 """
 
-from ._hecras import CrossSection, steady_profile, route_unsteady, __version__
+from ._hecras import (
+    CrossSection,
+    steady_profile,
+    route_unsteady,
+    run_swe2d,
+    __version__,
+)
 
-__all__ = ["CrossSection", "steady_profile", "route_unsteady", "__version__"]
+__all__ = [
+    "CrossSection",
+    "steady_profile",
+    "route_unsteady",
+    "run_swe2d",
+    "__version__",
+]
