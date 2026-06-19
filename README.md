@@ -8,7 +8,9 @@ so the engine runs natively on macOS/Linux and is scriptable from Python.
 Same architecture as [`fsm-rs`](https://github.com/joelfiddes/fsm-rs): a Rust core
 (`src/`) exposed to Python via [PyO3](https://pyo3.rs) + [maturin](https://www.maturin.rs).
 
-## Status — Phase 1: 1D steady flow ✅
+## Status
+
+### Phase 1 — 1D steady flow ✅
 
 - Cross-section geometry from station/elevation points (area, wetted perimeter, top
   width, hydraulic radius, Manning conveyance).
@@ -21,12 +23,23 @@ Same architecture as [`fsm-rs`](https://github.com/joelfiddes/fsm-rs): a Rust co
 
 ![M1 backwater validation](docs/trapezoidal_backwater.png)
 
+### Phase 2 — 1D unsteady flow ✅
+
+- Full **Saint-Venant** equations solved with the **Preissmann four-point implicit
+  box scheme**; Newton-Raphson per timestep.
+- Upstream discharge hydrograph; downstream normal-depth rating or prescribed stage.
+- Validated (`examples/flood_routing.py`) on three independent checks: steady-state
+  recovery to the Phase-1 profile (< 0.01 mm), **mass conservation** (< 0.1 %), and
+  physically-correct flood-wave **attenuation + lag** (celerity ≈ kinematic estimate).
+
+![Flood-wave routing validation](docs/flood_routing.png)
+
 ### Roadmap
 
 | Phase | Scope | Status |
 |------:|-------|--------|
-| 1 | 1D steady gradually-varied flow (standard-step) | done |
-| 2 | 1D unsteady — Saint-Venant via Preissmann implicit scheme | planned |
+| 1 | 1D steady gradually-varied flow (standard-step) | ✅ done |
+| 2 | 1D unsteady — Saint-Venant via Preissmann implicit scheme | ✅ done |
 | 3 | 2D shallow-water finite-volume on a DEM mesh | planned |
 | 4 | Application: Swiss reach (SwissALTI3D + BAFU gauge) → transfer to Central Asia | planned |
 
@@ -54,6 +67,23 @@ sections = [xs, xs, xs]
 reach_lengths = [100.0, 100.0]   # len(sections) - 1
 res = steady_profile(sections, reach_lengths, q=50.0, downstream_wse=2.5)
 res["wse"], res["depth"], res["froude"]   # numpy arrays, one value per section
+```
+
+### Unsteady flood routing (Phase 2)
+
+```python
+from hecras import route_unsteady
+
+# sections ordered upstream -> downstream; inflow hydrograph at the upstream end
+res = route_unsteady(
+    sections, reach_lengths,
+    initial_stage=z0, initial_q=q0,        # state at t=0, length N
+    inflow_q=hydrograph,                   # length n_steps + 1
+    dt=20.0, n_steps=900,
+    downstream="normal", downstream_slope=6e-4,   # or downstream="stage", downstream_stage=...
+)
+res["time"], res["inflow"], res["outflow"]        # 1D arrays
+res["stage"], res["discharge"]                    # 2D arrays [time, node]
 ```
 
 ## Develop / test

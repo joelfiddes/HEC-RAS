@@ -6,6 +6,7 @@
 pub mod geometry;
 pub mod hydraulics;
 pub mod steady;
+pub mod unsteady;
 
 // The Python bindings are gated behind the `extension-module` feature so that
 // `cargo test --no-default-features` compiles the pure-Rust core without linking
@@ -13,8 +14,10 @@ pub mod steady;
 #[cfg(feature = "extension-module")]
 mod python_bindings {
 use crate::geometry::CrossSection as RsCrossSection;
+use crate::unsteady::{self, DownstreamBc};
 use crate::{hydraulics, steady};
-use numpy::PyArray1;
+use numpy::ndarray::Array2;
+use numpy::{PyArray1, PyArray2};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
@@ -175,10 +178,126 @@ fn steady_profile<'py>(
     Ok(d)
 }
 
+/// Route 1D unsteady flow through a reach with the Preissmann implicit scheme.
+///
+/// `sections` are ordered upstream -> downstream; the upstream discharge hydrograph
+/// `inflow_q` (length n_steps + 1) is applied at index 0. `reach_lengths` has length
+/// len(sections) - 1. `initial_stage` / `initial_q` are the state at t = 0 (length N).
+///
+/// The downstream boundary is either `"normal"` (normal-depth rating, requires
+/// `downstream_slope`) or `"stage"` (prescribed water-surface, `downstream_stage` may
+/// be a scalar or a length n_steps+1 series).
+///
+/// Returns a dict of numpy arrays: `time` (n_steps+1), `stage` and `discharge`
+/// (2D, [time, node]), `inflow`, `outflow`, `max_residual`, `converged`.
+#[pyfunction]
+#[pyo3(signature = (sections, reach_lengths, initial_stage, initial_q, inflow_q, dt,
+    n_steps, theta=0.6, downstream="normal", downstream_slope=None, downstream_stage=None,
+    newton_tol=1e-7, max_newton=50))]
+#[allow(clippy::too_many_arguments)]
+fn route_unsteady<'py>(
+    py: Python<'py>,
+    sections: Vec<PyCrossSection>,
+    reach_lengths: Vec<f64>,
+    initial_stage: Vec<f64>,
+    initial_q: Vec<f64>,
+    inflow_q: Vec<f64>,
+    dt: f64,
+    n_steps: usize,
+    theta: f64,
+    downstream: &str,
+    downstream_slope: Option<f64>,
+    downstream_stage: Option<Vec<f64>>,
+    newton_tol: f64,
+    max_newton: usize,
+) -> PyResult<Bound<'py, PyDict>> {
+    let n = sections.len();
+    let err = |s: String| pyo3::exceptions::PyValueError::new_err(s);
+    if n < 2 {
+        return Err(err("need at least two sections".into()));
+    }
+    if reach_lengths.len() != n - 1 {
+        return Err(err(format!(
+            "reach_lengths must have length {}, got {}",
+            n - 1,
+            reach_lengths.len()
+        )));
+    }
+    if initial_stage.len() != n || initial_q.len() != n {
+        return Err(err("initial_stage and initial_q must have length len(sections)".into()));
+    }
+    if inflow_q.len() != n_steps + 1 {
+        return Err(err(format!(
+            "inflow_q must have length n_steps+1 = {}, got {}",
+            n_steps + 1,
+            inflow_q.len()
+        )));
+    }
+
+    let bc = match downstream {
+        "normal" => {
+            let s = downstream_slope
+                .ok_or_else(|| err("downstream='normal' requires downstream_slope".into()))?;
+            DownstreamBc::Normal(s)
+        }
+        "stage" => {
+            let raw = downstream_stage
+                .ok_or_else(|| err("downstream='stage' requires downstream_stage".into()))?;
+            let series = if raw.len() == 1 {
+                vec![raw[0]; n_steps + 1]
+            } else if raw.len() == n_steps + 1 {
+                raw
+            } else {
+                return Err(err(format!(
+                    "downstream_stage must be scalar or length n_steps+1 = {}",
+                    n_steps + 1
+                )));
+            };
+            DownstreamBc::Stage(series)
+        }
+        other => return Err(err(format!("unknown downstream BC '{}'", other))),
+    };
+
+    let xss: Vec<RsCrossSection> = sections.into_iter().map(|s| s.inner).collect();
+    let res = unsteady::route_unsteady(
+        &xss,
+        &reach_lengths,
+        &initial_stage,
+        &initial_q,
+        &inflow_q,
+        dt,
+        n_steps,
+        theta,
+        &bc,
+        newton_tol,
+        max_newton,
+    );
+
+    let rows = res.nsteps + 1;
+    let stage = Array2::from_shape_vec((rows, res.n), res.stage)
+        .map_err(|e| err(e.to_string()))?;
+    let discharge = Array2::from_shape_vec((rows, res.n), res.discharge)
+        .map_err(|e| err(e.to_string()))?;
+    let time: Vec<f64> = (0..rows).map(|k| k as f64 * dt).collect();
+    let inflow: Vec<f64> = (0..rows).map(|k| discharge[[k, 0]]).collect();
+    let outflow: Vec<f64> = (0..rows).map(|k| discharge[[k, res.n - 1]]).collect();
+
+    let d = PyDict::new_bound(py);
+    d.set_item("time", PyArray1::from_vec_bound(py, time))?;
+    d.set_item("stage", PyArray2::from_owned_array_bound(py, stage))?;
+    d.set_item("discharge", PyArray2::from_owned_array_bound(py, discharge))?;
+    d.set_item("inflow", PyArray1::from_vec_bound(py, inflow))?;
+    d.set_item("outflow", PyArray1::from_vec_bound(py, outflow))?;
+    d.set_item("max_residual", PyArray1::from_vec_bound(py, res.max_residual))?;
+    d.set_item("converged", res.converged)?;
+    Ok(d)
+}
+
 #[pymodule]
 fn _hecras(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCrossSection>()?;
     m.add_function(wrap_pyfunction!(steady_profile, m)?)?;
+    m.add_function(wrap_pyfunction!(route_unsteady, m)?)?;
     m.add("__version__", "0.1.0")?;
     Ok(())
 }
