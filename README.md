@@ -47,6 +47,32 @@ Same architecture as [`fsm-rs`](https://github.com/joelfiddes/fsm-rs): a Rust co
 
 ![2D dam-break vs Stoker](docs/dam_break_2d.png)
 
+### Phase 4 — real-world application (Landquart, GR) ✅
+
+- End-to-end pipeline on **real terrain**: swisstopo **SwissALTI3D** (2 m → 10 m) for a
+  3×2 km reach of the Landquart at the BAFU gauge **Felsenbach (2150)** — a steep
+  Alpine river chosen as a Central-Asian mountain-catchment analogue.
+- A flood hydrograph (ramp to the ~190 m³/s mean annual flood) is routed across the DEM
+  with the 2D engine — discharge injected as a mass source at the upstream channel cells,
+  draining through a transmissive outlet, solid valley walls elsewhere — producing a
+  **max-depth inundation map** with a closed mass budget.
+- `examples/download_landquart_dem.py` (data) + `examples/landquart_flood.py` (model).
+
+![Landquart flood inundation](docs/landquart_flood.png)
+
+#### Case study — the August 2005 flood at Klosters
+
+The August 2005 Alpenhochwasser was the Landquart's flood of record (391 m³/s at
+Felsenbach) and devastated the Prättigau; Klosters was inundated up to ~3 m deep. There
+is no gauge at Klosters, so the local peak is **area-scaled** from the Felsenbach record
+(~150 m³/s for the ~150 km² upper catchment) and routed across a 4×3 km SwissALTI3D
+DEM of the town reach (`examples/download_klosters_dem.py` + `examples/klosters_flood_2005.py`).
+The reconstructed flood follows the real channel through town and reaches ~4 m near
+Klosters Platz — the same order as the historical accounts. *(Scaled scenario, not a
+measured hydrograph.)*
+
+![Klosters August 2005 flood reconstruction](docs/klosters_flood_2005.png)
+
 ### Roadmap
 
 | Phase | Scope | Status |
@@ -54,7 +80,8 @@ Same architecture as [`fsm-rs`](https://github.com/joelfiddes/fsm-rs): a Rust co
 | 1 | 1D steady gradually-varied flow (standard-step) | ✅ done |
 | 2 | 1D unsteady — Saint-Venant via Preissmann implicit scheme | ✅ done |
 | 3 | 2D shallow-water finite-volume on a DEM grid | ✅ done |
-| 4 | Application: Swiss reach (SwissALTI3D + BAFU gauge) → transfer to Central Asia | planned |
+| 4 | Application: Landquart reach (SwissALTI3D + BAFU gauge) | ✅ done |
+| → | Transfer methodology to a Central Asian reach | planned |
 
 Units are **SI / metric** throughout.
 

@@ -6,3 +6,7 @@
 *.png
 !docs/**/*.png
 .DS_Store
+# raw DEM tiles are large + re-downloadable; keep the small derived grid (dem10.*)
+data/**/*.tif
+data/**/*.json
+!data/**/dem10.json

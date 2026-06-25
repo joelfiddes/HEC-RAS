@@ -303,7 +303,9 @@ fn route_unsteady<'py>(
 /// series, `steps` and `t_final`.
 #[pyfunction]
 #[pyo3(signature = (nx, ny, dx, dy, bed, h0, hu0, hv0, manning_n=0.0, t_end=10.0,
-    cfl=0.45, bc="transmissive", max_steps=1_000_000))]
+    cfl=0.45, bc="transmissive", max_steps=1_000_000, max_dt=f64::INFINITY,
+    bc_xlow=None, bc_xhigh=None, bc_ylow=None, bc_yhigh=None,
+    source_idx=vec![], source_t=vec![], source_q=vec![]))]
 #[allow(clippy::too_many_arguments)]
 fn run_swe2d<'py>(
     py: Python<'py>,
@@ -320,6 +322,14 @@ fn run_swe2d<'py>(
     cfl: f64,
     bc: &str,
     max_steps: usize,
+    max_dt: f64,
+    bc_xlow: Option<&str>,
+    bc_xhigh: Option<&str>,
+    bc_ylow: Option<&str>,
+    bc_yhigh: Option<&str>,
+    source_idx: Vec<usize>,
+    source_t: Vec<f64>,
+    source_q: Vec<f64>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let err = |s: String| pyo3::exceptions::PyValueError::new_err(s);
     let need = nx * ny;
@@ -328,14 +338,30 @@ fn run_swe2d<'py>(
             return Err(err(format!("{} must have length nx*ny = {}, got {}", name, need, v.len())));
         }
     }
-    let bc = match bc {
-        "transmissive" | "open" => Bc::Transmissive,
-        "reflective" | "wall" => Bc::Reflective,
-        other => return Err(err(format!("unknown bc '{}'", other))),
+    let parse_bc = |s: &str| -> PyResult<Bc> {
+        match s {
+            "transmissive" | "open" => Ok(Bc::Transmissive),
+            "reflective" | "wall" => Ok(Bc::Reflective),
+            other => Err(err(format!("unknown bc '{}'", other))),
+        }
     };
+    // per-edge BCs, each defaulting to the general `bc`
+    let bc = [
+        parse_bc(bc_xlow.unwrap_or(bc))?,
+        parse_bc(bc_xhigh.unwrap_or(bc))?,
+        parse_bc(bc_ylow.unwrap_or(bc))?,
+        parse_bc(bc_yhigh.unwrap_or(bc))?,
+    ];
+
+    for &s in &source_idx {
+        if s >= need {
+            return Err(err(format!("source_idx {} out of range (nx*ny={})", s, need)));
+        }
+    }
 
     let res = swe2d::run_swe2d(
-        nx, ny, dx, dy, &bed, &h0, &hu0, &hv0, manning_n, t_end, cfl, bc, max_steps,
+        nx, ny, dx, dy, &bed, &h0, &hu0, &hv0, manning_n, t_end, cfl, bc, max_steps, max_dt,
+        &source_idx, &source_t, &source_q,
     );
 
     let to2d = |v: Vec<f64>| -> PyResult<_> {
@@ -345,8 +371,10 @@ fn run_swe2d<'py>(
     d.set_item("h", PyArray2::from_owned_array_bound(py, to2d(res.h)?))?;
     d.set_item("hu", PyArray2::from_owned_array_bound(py, to2d(res.hu)?))?;
     d.set_item("hv", PyArray2::from_owned_array_bound(py, to2d(res.hv)?))?;
+    d.set_item("h_max", PyArray2::from_owned_array_bound(py, to2d(res.h_max)?))?;
     d.set_item("time", PyArray1::from_vec_bound(py, res.times))?;
     d.set_item("volume", PyArray1::from_vec_bound(py, res.volumes))?;
+    d.set_item("inflow_vol", PyArray1::from_vec_bound(py, res.inflow_vol))?;
     d.set_item("steps", res.steps)?;
     d.set_item("t_final", res.t_final)?;
     Ok(d)

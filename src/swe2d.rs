@@ -32,10 +32,32 @@ pub struct Swe2dResult {
     pub h: Vec<f64>,  // final depth, row-major [j*nx + i]
     pub hu: Vec<f64>,
     pub hv: Vec<f64>,
+    pub h_max: Vec<f64>, // peak depth reached at each cell over the run
     pub times: Vec<f64>,
     pub volumes: Vec<f64>,
+    pub inflow_vol: Vec<f64>, // cumulative injected volume at each sample time
     pub steps: usize,
     pub t_final: f64,
+}
+
+/// Linear interpolation of a hydrograph (`ts`, `qs`) at time `t`, clamped at the ends.
+fn interp(t: f64, ts: &[f64], qs: &[f64]) -> f64 {
+    if ts.is_empty() {
+        return 0.0;
+    }
+    if t <= ts[0] {
+        return qs[0];
+    }
+    let n = ts.len();
+    if t >= ts[n - 1] {
+        return qs[n - 1];
+    }
+    let mut k = 0;
+    while k + 1 < n && ts[k + 1] < t {
+        k += 1;
+    }
+    let w = (t - ts[k]) / (ts[k + 1] - ts[k]);
+    qs[k] * (1.0 - w) + qs[k + 1] * w
 }
 
 #[inline]
@@ -107,8 +129,12 @@ pub fn run_swe2d(
     manning_n: f64,
     t_end: f64,
     cfl: f64,
-    bc: Bc,
+    bc: [Bc; 4], // [xlow (west), xhigh (east), ylow, yhigh]
     max_steps: usize,
+    max_dt: f64,
+    source_idx: &[usize],
+    src_t: &[f64],
+    src_q: &[f64],
 ) -> Swe2dResult {
     // Padded arrays with one ghost layer on each side.
     let w = nx + 2;
@@ -129,33 +155,36 @@ pub fn run_swe2d(
         }
     }
 
+    let refl_xlow = matches!(bc[0], Bc::Reflective);
+    let refl_xhigh = matches!(bc[1], Bc::Reflective);
+    let refl_ylow = matches!(bc[2], Bc::Reflective);
+    let refl_yhigh = matches!(bc[3], Bc::Reflective);
     let fill_ghosts = |h: &mut [f64], hu: &mut [f64], hv: &mut [f64], bed: &mut [f64]| {
-        let refl = matches!(bc, Bc::Reflective);
-        // left (i=0) / right (i=nx+1) columns
+        // west (i=0) / east (i=nx+1) columns
         for j in 1..=ny {
             let (li, ri) = (idx(1, j), idx(0, j));
             h[ri] = h[li];
             bed[ri] = bed[li];
             hv[ri] = hv[li];
-            hu[ri] = if refl { -hu[li] } else { hu[li] };
+            hu[ri] = if refl_xlow { -hu[li] } else { hu[li] };
             let (li2, ri2) = (idx(nx, j), idx(nx + 1, j));
             h[ri2] = h[li2];
             bed[ri2] = bed[li2];
             hv[ri2] = hv[li2];
-            hu[ri2] = if refl { -hu[li2] } else { hu[li2] };
+            hu[ri2] = if refl_xhigh { -hu[li2] } else { hu[li2] };
         }
-        // bottom (j=0) / top (j=ny+1) rows
+        // ylow (j=0) / yhigh (j=ny+1) rows
         for i in 1..=nx {
             let (bi, gi) = (idx(i, 1), idx(i, 0));
             h[gi] = h[bi];
             bed[gi] = bed[bi];
             hu[gi] = hu[bi];
-            hv[gi] = if refl { -hv[bi] } else { hv[bi] };
+            hv[gi] = if refl_ylow { -hv[bi] } else { hv[bi] };
             let (bi2, gi2) = (idx(i, ny), idx(i, ny + 1));
             h[gi2] = h[bi2];
             bed[gi2] = bed[bi2];
             hu[gi2] = hu[bi2];
-            hv[gi2] = if refl { -hv[bi2] } else { hv[bi2] };
+            hv[gi2] = if refl_yhigh { -hv[bi2] } else { hv[bi2] };
         }
     };
 
@@ -171,6 +200,12 @@ pub fn run_swe2d(
 
     let mut times = vec![0.0];
     let mut volumes = vec![volume(&h)];
+    let mut inflow_vol = vec![0.0];
+    let mut cum_inflow = 0.0;
+    let nsrc = source_idx.len().max(1) as f64;
+
+    // peak depth tracker (interior, row-major)
+    let mut h_max = h0.to_vec();
 
     let mut t = 0.0;
     let mut step = 0;
@@ -194,7 +229,9 @@ pub fn run_swe2d(
                 }
             }
         }
-        let mut dt = cfl / inv_dt;
+        // cap dt (essential for a dry start with inflow, where there is no wave
+        // speed yet and the CFL estimate would otherwise be unbounded)
+        let mut dt = (cfl / inv_dt).min(max_dt);
         if t + dt > t_end {
             dt = t_end - t;
         }
@@ -294,16 +331,41 @@ pub fn run_swe2d(
             }
         }
 
+        // inject inflow as a mass source over the source cells
+        if !source_idx.is_empty() {
+            let q_now = interp(t + dt, src_t, src_q);
+            let dh = (q_now / nsrc) * dt / (dx * dy);
+            for &s in source_idx {
+                let j = s / nx;
+                let i = s % nx;
+                h[idx(i + 1, j + 1)] += dh;
+            }
+            cum_inflow += q_now * dt;
+        }
+
+        // update peak-depth field
+        for j in 0..ny {
+            for i in 0..nx {
+                let v = h[idx(i + 1, j + 1)];
+                let s = j * nx + i;
+                if v > h_max[s] {
+                    h_max[s] = v;
+                }
+            }
+        }
+
         t += dt;
         step += 1;
         if step % 20 == 0 {
             times.push(t);
             volumes.push(volume(&h));
+            inflow_vol.push(cum_inflow);
         }
     }
 
     times.push(t);
     volumes.push(volume(&h));
+    inflow_vol.push(cum_inflow);
 
     // unpad interior fields
     let mut ho = vec![0.0; nx * ny];
@@ -325,8 +387,10 @@ pub fn run_swe2d(
         h: ho,
         hu: huo,
         hv: hvo,
+        h_max,
         times,
         volumes,
+        inflow_vol,
         steps: step,
         t_final: t,
     }
@@ -358,7 +422,8 @@ mod tests {
         let hu0 = vec![0.0; nx * ny];
         let hv0 = vec![0.0; nx * ny];
         let res = run_swe2d(
-            nx, ny, dx, dy, &zb, &h0, &hu0, &hv0, 0.0, 50.0, 0.45, Bc::Reflective, 100000,
+            nx, ny, dx, dy, &zb, &h0, &hu0, &hv0, 0.0, 50.0, 0.45, [Bc::Reflective; 4], 100000, f64::INFINITY,
+            &[], &[], &[],
         );
         // velocities must stay ~0 and the surface flat
         let mut max_vel = 0.0_f64;
@@ -396,7 +461,8 @@ mod tests {
         let hu0 = vec![0.0; nx * ny];
         let hv0 = vec![0.0; nx * ny];
         let res = run_swe2d(
-            nx, ny, dx, dy, &zb, &h0, &hu0, &hv0, 0.02, 30.0, 0.45, Bc::Reflective, 100000,
+            nx, ny, dx, dy, &zb, &h0, &hu0, &hv0, 0.02, 30.0, 0.45, [Bc::Reflective; 4], 100000, f64::INFINITY,
+            &[], &[], &[],
         );
         let v0 = res.volumes[0];
         let vf = *res.volumes.last().unwrap();
